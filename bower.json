@@ -2,7 +2,7 @@
   "name": "raven-js",
   "version": "3.2.1",
   "dependencies": {},
-  "main": "dist/raven.js",
+  "main":  ["dist/raven.js", "dist/plugins/angular.js"],
   "ignore": [
     "**/.*",
     "AUTHORS",
