@@ -4,6 +4,7 @@
 var TraceKit = require('../vendor/TraceKit/tracekit');
 var RavenConfigError = require('./configError');
 var utils = require('./utils');
+var stringify = require('json-stringify-safe');
 
 var isFunction = utils.isFunction;
 var isUndefined = utils.isUndefined;
@@ -86,7 +87,7 @@ Raven.prototype = {
     // webpack (using a build step causes webpack #1617). Grunt verifies that
     // this value matches package.json during build.
     //   See: https://github.com/getsentry/raven-js/issues/465
-    VERSION: '3.2.1',
+    VERSION: '3.4.0',
 
     debug: false,
 
@@ -428,7 +429,20 @@ Raven.prototype = {
      */
     getContext: function() {
         // lol javascript
-        return JSON.parse(JSON.stringify(this._globalContext));
+        return JSON.parse(stringify(this._globalContext));
+    },
+
+
+    /*
+     * Set environment of application
+     *
+     * @param {string} environment Typically something like 'production'.
+     * @return {Raven}
+     */
+    setEnvironment: function(environment) {
+        this._globalOptions.environment = environment;
+
+        return this;
     },
 
     /*
@@ -1146,8 +1160,6 @@ Raven.prototype = {
 
 
     _send: function(data) {
-        var self = this;
-
         var globalOptions = this._globalOptions;
 
         var baseData = {
@@ -1185,6 +1197,9 @@ Raven.prototype = {
             data.user = this._globalContext.user;
         }
 
+        // Include the environment if it's defined in globalOptions
+        if (globalOptions.environment) data.environment = globalOptions.environment;
+
         // Include the release if it's defined in globalOptions
         if (globalOptions.release) data.release = globalOptions.release;
 
@@ -1204,6 +1219,13 @@ Raven.prototype = {
         if (isFunction(globalOptions.shouldSendCallback) && !globalOptions.shouldSendCallback(data)) {
             return;
         }
+
+        this._sendProcessedPayload(data);
+    },
+
+    _sendProcessedPayload: function(data, callback) {
+        var self = this;
+        var globalOptions = this._globalOptions;
 
         // Send along an event_id if not explicitly passed.
         // This event_id can be used to reference the error within Sentry itself.
@@ -1247,12 +1269,15 @@ Raven.prototype = {
                     data: data,
                     src: url
                 });
+                callback && callback();
             },
-            onError: function failure() {
+            onError: function failure(error) {
                 self._triggerEvent('failure', {
                     data: data,
                     src: url
                 });
+                error = error || new Error('Raven send failed (no additional details provided)');
+                callback && callback(error);
             }
         });
     },
@@ -1274,7 +1299,7 @@ Raven.prototype = {
                     opts.onSuccess();
                 }
             } else if (opts.onError) {
-                opts.onError();
+                opts.onError(new Error('Sentry error code: ' + request.status));
             }
         }
 
@@ -1298,7 +1323,7 @@ Raven.prototype = {
         // NOTE: auth is intentionally sent as part of query string (NOT as custom
         //       HTTP header) so as to avoid preflight CORS requests
         request.open('POST', url + '?' + urlencode(opts.auth));
-        request.send(JSON.stringify(opts.data));
+        request.send(stringify(opts.data));
     },
 
     _logDebug: function(level) {

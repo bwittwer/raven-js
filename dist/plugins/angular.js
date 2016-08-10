@@ -1,4 +1,4 @@
-/*! Raven.js 3.2.1 (bbd229d) | github.com/getsentry/raven-js */
+/*! Raven.js 3.4.0 (4dba6fe) | github.com/getsentry/raven-js */
 
 /*
  * Includes TraceKit
@@ -19,7 +19,8 @@
 'use strict';
 
 // See https://github.com/angular/angular.js/blob/v1.4.7/src/minErr.js
-var angularPattern = /^\[((?:[$a-zA-Z0-9]+:)?(?:[$a-zA-Z0-9]+))\] (.+?)\n(\S+)$/;
+var angularPattern = /^\[((?:[$a-zA-Z0-9]+:)?(?:[$a-zA-Z0-9]+))\] (.*?)\n?(\S+)$/;
+
 
 function angularPlugin(Raven, angular) {
     angular = angular || window.angular;
@@ -50,24 +51,31 @@ function angularPlugin(Raven, angular) {
         .provider('Raven',  RavenProvider)
         .config(['$provide', ExceptionHandlerProvider]);
 
-    Raven.setDataCallback(function(data) {
-        // We only care about mutating an exception
-        var exception = data.exception;
-        if (exception) {
-            exception = exception.values[0];
-            var matches = angularPattern.exec(exception.value);
+    Raven.setDataCallback(function(data, original) {
+        angularPlugin._normalizeData(data);
 
-            if (matches) {
-                // This type now becomes something like: $rootScope:inprog
-                exception.type = matches[1];
-                exception.value = matches[2];
-                data.message = exception.type + ': ' + exception.value;
-                // auto set a new tag specifically for the angular error url
-                data.extra.angularDocs = matches[3].substr(0, 250);
-            }
-        }
+        original && original(data);
     });
 }
+
+angularPlugin._normalizeData = function (data) {
+    // We only care about mutating an exception
+    var exception = data.exception;
+    if (exception) {
+        exception = exception.values[0];
+        var matches = angularPattern.exec(exception.value);
+
+        if (matches) {
+            // This type now becomes something like: $rootScope:inprog
+            exception.type = matches[1];
+            exception.value = matches[2];
+
+            data.message = exception.type + ': ' + exception.value;
+            // auto set a new tag specifically for the angular error url
+            data.extra.angularDocs = matches[3].substr(0, 250);
+        }
+    }
+};
 
 module.exports = angularPlugin;
 
