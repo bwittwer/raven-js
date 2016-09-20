@@ -1,6 +1,6 @@
 import Raven = require('..');
 
-Raven.config('https://public@getsentry.com/1').install();
+Raven.config('https://public@sentry.io/1').install();
 
 var options = {
     logger: 'my-logger',
@@ -14,7 +14,7 @@ var options = {
     ],
     includePaths: [
         /https?:\/\/(www\.)?getsentry\.com/,
-        'https://www.getsentry.com'
+        'https://www.sentry.io'
     ],
     whitelistUrls: [
         /https?:\/\/google\.com/,
@@ -22,7 +22,7 @@ var options = {
     ]
 };
 
-Raven.config('https://public@getsentry.com/1', options).install();
+Raven.config('https://public@sentry.io/1', options).install();
 
 var throwsError = () => {
     throw new Error('broken');
@@ -59,10 +59,10 @@ Raven.captureBreadcrumb({});
 Raven.setRelease('abc123');
 Raven.setEnvironment('production');
 
-Raven.setDataCallback(function (data) {});
-Raven.setDataCallback(function (data, original) {});
-Raven.setShouldSendCallback(function (data) {});
-Raven.setShouldSendCallback(function (data, original) {});
+Raven.setDataCallback(function (data: any) {});
+Raven.setDataCallback(function (data: any, original: any) {});
+Raven.setShouldSendCallback(function (data: any) {});
+Raven.setShouldSendCallback(function (data: any, original: any) {});
 
 Raven.showReportDialog({
     eventId: 'abcdef123456'

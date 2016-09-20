@@ -71,7 +71,7 @@ Those configuration options are documented below:
 
 .. describe:: tags
 
-    Additional `tags <https://www.getsentry.com/docs/tags/>`__ to assign to each event.
+    Additional `tags <https://docs.sentry.io/hosted/learn/context/#tagging-events>`__ to assign to each event.
 
     .. code-block:: javascript
 
@@ -269,7 +269,7 @@ Putting it all together
     <body>
         ...
         <script src="jquery.min.js"></script>
-        <script src="https://cdn.ravenjs.com/3.5.1/raven.min.js"></script>
+        <script src="https://cdn.ravenjs.com/3.7.0/raven.min.js"></script>
         <script>
             Raven.config('___PUBLIC_DSN___', {
                 logger: 'my-logger',

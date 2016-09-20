@@ -1,4 +1,4 @@
-/*! Raven.js 3.5.1 (bef9fa7) | github.com/getsentry/raven-js */
+/*! Raven.js 3.7.0 (cf2ddee) | github.com/getsentry/raven-js */
 
 /*
  * Includes TraceKit
@@ -182,7 +182,7 @@ Raven.prototype = {
     // webpack (using a build step causes webpack #1617). Grunt verifies that
     // this value matches package.json during build.
     //   See: https://github.com/getsentry/raven-js/issues/465
-    VERSION: '3.5.1',
+    VERSION: '3.7.0',
 
     debug: false,
 
@@ -216,11 +216,7 @@ Raven.prototype = {
             });
         }
 
-        var uri = this._parseDSN(dsn),
-            lastSlash = uri.path.lastIndexOf('/'),
-            path = uri.path.substr(1, lastSlash);
-
-        this._dsn = dsn;
+        this.setDSN(dsn);
 
         // "Script error." is hard coded into browsers for errors that it can't read.
         // this is the result of a script being pulled in from an external domain and CORS.
@@ -248,15 +244,6 @@ Raven.prototype = {
             autoBreadcrumbs = autoBreadcrumbDefaults;
         }
         this._globalOptions.autoBreadcrumbs = autoBreadcrumbs;
-
-        this._globalKey = uri.user;
-        this._globalSecret = uri.pass && uri.pass.substr(1);
-        this._globalProject = uri.path.substr(lastSlash + 1);
-
-        this._globalServer = this._getGlobalServer(uri);
-
-        this._globalEndpoint = this._globalServer +
-            '/' + path + 'api/' + this._globalProject + '/store/';
 
         TraceKit.collectWindowErrors = !!this._globalOptions.collectWindowErrors;
 
@@ -290,6 +277,27 @@ Raven.prototype = {
 
         Error.stackTraceLimit = this._globalOptions.stackTraceLimit;
         return this;
+    },
+
+    /*
+     * Set the DSN (can be called multiple time unlike config)
+     *
+     * @param {string} dsn The public Sentry DSN
+     */
+    setDSN: function(dsn) {
+        var uri = this._parseDSN(dsn),
+          lastSlash = uri.path.lastIndexOf('/'),
+          path = uri.path.substr(1, lastSlash);
+
+        this._dsn = dsn;
+        this._globalKey = uri.user;
+        this._globalSecret = uri.pass && uri.pass.substr(1);
+        this._globalProject = uri.path.substr(lastSlash + 1);
+
+        this._globalServer = this._getGlobalServer(uri);
+
+        this._globalEndpoint = this._globalServer +
+            '/' + path + 'api/' + this._globalProject + '/store/';
     },
 
     /*
@@ -343,16 +351,16 @@ Raven.prototype = {
             if (func.__raven__) {
                 return func;
             }
+
+            // If this has already been wrapped in the past, return that
+            if (func.__raven_wrapper__ ){
+                return func.__raven_wrapper__ ;
+            }
         } catch (e) {
-            // Just accessing the __raven__ prop in some Selenium environments
+            // Just accessing custom props in some Selenium environments
             // can cause a "Permission denied" exception (see raven-js#495).
             // Bail on wrapping and return the function as-is (defers to window.onerror).
             return func;
-        }
-
-        // If this has already been wrapped in the past, return that
-        if (func.__raven_wrapper__ ){
-            return func.__raven_wrapper__ ;
         }
 
         function wrapped() {
@@ -418,7 +426,12 @@ Raven.prototype = {
      */
     captureException: function(ex, options) {
         // If not an Error is passed through, recall as a message instead
-        if (!isError(ex)) return this.captureMessage(ex, options);
+        if (!isError(ex)) {
+            return this.captureMessage(ex, objectMerge({
+                trimHeadFrames: 1,
+                stacktrace: true // if we fall back to captureMessage, default to attempting a new trace
+            }, options));
+        }
 
         // Store the raw exception object for potential debugging and introspection
         this._lastCapturedException = ex;
@@ -455,12 +468,41 @@ Raven.prototype = {
             return;
         }
 
+        var data = objectMerge({
+            message: msg + ''  // Make sure it's actually a string
+        }, options);
+
+        if (options && options.stacktrace) {
+            var ex;
+            // create a stack trace from this point; just trim
+            // off extra frames so they don't include this function call (or
+            // earlier Raven.js library fn calls)
+            try {
+                throw new Error(msg);
+            } catch (ex1) {
+                ex = ex1;
+            }
+
+            // null exception name so `Error` isn't prefixed to msg
+            ex.name = null;
+
+            options = objectMerge({
+                // fingerprint on msg, not stack trace (legacy behavior, could be
+                // revisited)
+                fingerprint: msg,
+                trimHeadFrames: (options.trimHeadFrames || 0) + 1
+            }, options);
+
+            var stack = TraceKit.computeStackTrace(ex);
+            var frames = this._prepareFrames(stack, options);
+            data.stacktrace = {
+                // Sentry expects frames oldest to newest
+                frames: frames.reverse()
+            }
+        }
+
         // Fire away!
-        this._send(
-            objectMerge({
-                message: msg + ''  // Make sure it's actually a string
-            }, options)
-        );
+        this._send(data);
 
         return this;
     },
@@ -474,6 +516,7 @@ Raven.prototype = {
         if (this._breadcrumbs.length > this._globalOptions.maxBreadcrumbs) {
             this._breadcrumbs.shift();
         }
+        return this;
     },
 
     addPlugin: function(plugin /*arg1, arg2, ... argN*/) {
@@ -914,7 +957,11 @@ Raven.prototype = {
                 }, wrappedBuiltIns);
                 fill(proto, 'removeEventListener', function (orig) {
                     return function (evt, fn, capture, secure) {
-                        fn = fn && (fn.__raven_wrapper__ ? fn.__raven_wrapper__  : fn);
+                        try {
+                            fn = fn && (fn.__raven_wrapper__ ? fn.__raven_wrapper__  : fn);
+                        } catch (e) {
+                            // ignore, accessing __raven_wrapper__ will throw in some Selenium environments
+                        }
                         return orig.call(this, evt, fn, capture, secure);
                     };
                 }, wrappedBuiltIns);
@@ -1158,17 +1205,7 @@ Raven.prototype = {
     },
 
     _handleStackInfo: function(stackInfo, options) {
-        var self = this;
-        var frames = [];
-
-        if (stackInfo.stack && stackInfo.stack.length) {
-            each(stackInfo.stack, function(i, stack) {
-                var frame = self._normalizeFrame(stack);
-                if (frame) {
-                    frames.push(frame);
-                }
-            });
-        }
+        var frames = this._prepareFrames(stackInfo, options);
 
         this._triggerEvent('handle', {
             stackInfo: stackInfo,
@@ -1180,10 +1217,33 @@ Raven.prototype = {
             stackInfo.message,
             stackInfo.url,
             stackInfo.lineno,
-            frames.slice(0, this._globalOptions.stackTraceLimit),
+            frames,
             options
         );
     },
+
+    _prepareFrames: function(stackInfo, options) {
+        var self = this;
+        var frames = [];
+        if (stackInfo.stack && stackInfo.stack.length) {
+            each(stackInfo.stack, function(i, stack) {
+                var frame = self._normalizeFrame(stack);
+                if (frame) {
+                    frames.push(frame);
+                }
+            });
+
+            // e.g. frames captured via captureMessage throw
+            if (options && options.trimHeadFrames) {
+                for (var j = 0; j < options.trimHeadFrames && j < frames.length; j++) {
+                    frames[j].in_app = false;
+                }
+            }
+        }
+        frames = frames.slice(0, this._globalOptions.stackTraceLimit);
+        return frames;
+    },
+
 
     _normalizeFrame: function(frame) {
         if (!frame.url) return;
@@ -1210,7 +1270,6 @@ Raven.prototype = {
 
     _processException: function(type, message, fileurl, lineno, frames, options) {
         var stacktrace;
-
         if (!!this._globalOptions.ignoreErrors.test && this._globalOptions.ignoreErrors.test(message)) return;
 
         message += '';
@@ -1298,6 +1357,9 @@ Raven.prototype = {
         if (httpData) {
             baseData.request = httpData;
         }
+
+        // HACK: delete `trimHeadFrames` to prevent from appearing in outbound payload
+        if (data.trimHeadFrames) delete data.trimHeadFrames;
 
         data = objectMerge(baseData, data);
 
@@ -2232,153 +2294,6 @@ TraceKit.computeStackTrace = (function computeStackTraceWrapper() {
     }
 
     /**
-     * Computes stack trace information from the stacktrace property.
-     * Opera 10 uses this property.
-     * @param {Error} ex
-     * @return {?Object.<string, *>} Stack trace information.
-     */
-    function computeStackTraceFromStacktraceProp(ex) {
-        // Access and store the stacktrace property before doing ANYTHING
-        // else to it because Opera is not very good at providing it
-        // reliably in other circumstances.
-        var stacktrace = ex.stacktrace;
-        if (isUndefined(ex.stacktrace) || !ex.stacktrace) return;
-
-        var opera10Regex = / line (\d+).*script (?:in )?(\S+)(?:: in function (\S+))?$/i,
-          opera11Regex = / line (\d+), column (\d+)\s*(?:in (?:<anonymous function: ([^>]+)>|([^\)]+))\((.*)\))? in (.*):\s*$/i,
-          lines = stacktrace.split('\n'),
-          stack = [],
-          parts;
-
-        for (var line = 0; line < lines.length; line += 2) {
-            var element = null;
-            if ((parts = opera10Regex.exec(lines[line]))) {
-                element = {
-                    'url': parts[2],
-                    'line': +parts[1],
-                    'column': null,
-                    'func': parts[3],
-                    'args':[]
-                };
-            } else if ((parts = opera11Regex.exec(lines[line]))) {
-                element = {
-                    'url': parts[6],
-                    'line': +parts[1],
-                    'column': +parts[2],
-                    'func': parts[3] || parts[4],
-                    'args': parts[5] ? parts[5].split(',') : []
-                };
-            }
-
-            if (element) {
-                if (!element.func && element.line) {
-                    element.func = UNKNOWN_FUNCTION;
-                }
-
-                stack.push(element);
-            }
-        }
-
-        if (!stack.length) {
-            return null;
-        }
-
-        return {
-            'name': ex.name,
-            'message': ex.message,
-            'url': getLocationHref(),
-            'stack': stack
-        };
-    }
-
-    /**
-     * NOT TESTED.
-     * Computes stack trace information from an error message that includes
-     * the stack trace.
-     * Opera 9 and earlier use this method if the option to show stack
-     * traces is turned on in opera:config.
-     * @param {Error} ex
-     * @return {?Object.<string, *>} Stack information.
-     */
-    function computeStackTraceFromOperaMultiLineMessage(ex) {
-        // Opera includes a stack trace into the exception message. An example is:
-        //
-        // Statement on line 3: Undefined variable: undefinedFunc
-        // Backtrace:
-        //   Line 3 of linked script file://localhost/Users/andreyvit/Projects/TraceKit/javascript-client/sample.js: In function zzz
-        //         undefinedFunc(a);
-        //   Line 7 of inline#1 script in file://localhost/Users/andreyvit/Projects/TraceKit/javascript-client/sample.html: In function yyy
-        //           zzz(x, y, z);
-        //   Line 3 of inline#1 script in file://localhost/Users/andreyvit/Projects/TraceKit/javascript-client/sample.html: In function xxx
-        //           yyy(a, a, a);
-        //   Line 1 of function script
-        //     try { xxx('hi'); return false; } catch(ex) { TraceKit.report(ex); }
-        //   ...
-
-        var lines = ex.message.split('\n');
-        if (lines.length < 4) {
-            return null;
-        }
-
-        var lineRE1 = /^\s*Line (\d+) of linked script ((?:file|https?|blob)\S+)(?:: in function (\S+))?\s*$/i,
-            lineRE2 = /^\s*Line (\d+) of inline#(\d+) script in ((?:file|https?|blob)\S+)(?:: in function (\S+))?\s*$/i,
-            lineRE3 = /^\s*Line (\d+) of function script\s*$/i,
-            stack = [],
-            scripts = document.getElementsByTagName('script'),
-            parts;
-
-        for (var line = 2; line < lines.length; line += 2) {
-            var item = null;
-            if ((parts = lineRE1.exec(lines[line]))) {
-                item = {
-                    'url': parts[2],
-                    'func': parts[3],
-                    'args': [],
-                    'line': +parts[1],
-                    'column': null
-                };
-            } else if ((parts = lineRE2.exec(lines[line]))) {
-                item = {
-                    'url': parts[3],
-                    'func': parts[4],
-                    'args': [],
-                    'line': +parts[1],
-                    'column': null // TODO: Check to see if inline#1 (+parts[2]) points to the script number or column number.
-                };
-                var relativeLine = (+parts[1]); // relative to the start of the <SCRIPT> block
-            } else if ((parts = lineRE3.exec(lines[line]))) {
-                var url = window.location.href.replace(/#.*$/, '');
-                item = {
-                    'url': url,
-                    'func': '',
-                    'args': [],
-                    'line': parts[1],
-                    'column': null
-                };
-            }
-
-            if (item) {
-                if (!item.func) {
-                    item.func = UNKNOWN_FUNCTION;
-                }
-
-                stack.push(item);
-            }
-        }
-
-        if (!stack.length) {
-            return null; // could not parse multiline exception message as Opera stack trace
-        }
-
-        return {
-            'name': ex.name,
-            'message': lines[0],
-            'url': getLocationHref(),
-            'stack': stack
-        };
-    }
-
-    /**
      * Adds information about the first frame to incomplete stack traces.
      * Safari and IE require this to get complete data on the first frame.
      * @param {Object.<string, *>} stackInfo Stack trace information from
@@ -2503,32 +2418,7 @@ TraceKit.computeStackTrace = (function computeStackTraceWrapper() {
         depth = (depth == null ? 0 : +depth);
 
         try {
-            // This must be tried first because Opera 10 *destroys*
-            // its stacktrace property if you try to access the stack
-            // property first!!
-            stack = computeStackTraceFromStacktraceProp(ex);
-            if (stack) {
-                return stack;
-            }
-        } catch (e) {
-            if (TraceKit.debug) {
-                throw e;
-            }
-        }
-
-        try {
             stack = computeStackTraceFromStackProp(ex);
-            if (stack) {
-                return stack;
-            }
-        } catch (e) {
-            if (TraceKit.debug) {
-                throw e;
-            }
-        }
-
-        try {
-            stack = computeStackTraceFromOperaMultiLineMessage(ex);
             if (stack) {
                 return stack;
             }

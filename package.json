@@ -1,12 +1,12 @@
 {
   "name": "raven-js",
-  "version": "3.5.1",
+  "version": "3.7.0",
   "license": "BSD-2-Clause",
   "homepage": "https://github.com/getsentry/raven-js",
   "scripts": {
     "pretest": "npm install",
     "test": "grunt test && npm run-script test-typescript",
-    "test-typescript": "node_modules/typescript/bin/tsc --noEmit typescript/raven-tests.ts"
+    "test-typescript": "node_modules/typescript/bin/tsc --noEmit --noImplicitAny typescript/raven-tests.ts"
   },
   "repository": {
     "type": "git",
