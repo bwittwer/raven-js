@@ -7,19 +7,16 @@ var proxyquire = require('proxyquireify')(require);
 var TraceKit = require('../vendor/TraceKit/tracekit');
 
 var _Raven = proxyquire('../src/raven', {
-    './utils': {
-        // patched to return a predictable result
-        uuid4: function () {
-            return 'abc123';
-        }
-    },
-
     // Ensure same TraceKit obj is shared (without specifying this, proxyquire
     // seems to clone dependencies or something weird)
     '../vendor/TraceKit/tracekit': TraceKit
 });
 
-var joinRegExp = require('../src/utils').joinRegExp;
+_Raven.prototype._getUuid = function () {
+    return 'abc123';
+};
+
+var joinRegExp = _Raven.utils.joinRegExp;
 
 // window.console must be stubbed in for browsers that don't have it
 if (typeof window.console === 'undefined') {
@@ -31,7 +28,6 @@ var SENTRY_DSN = 'http://abc@example.com:80/2';
 function setupRaven() {
     Raven.config(SENTRY_DSN);
 }
-
 
 var Raven;
 
@@ -1008,7 +1004,7 @@ describe('globals', function() {
                 extra: {'session:duration': 100},
             });
             assert.deepEqual(opts.auth, {
-                sentry_client: 'raven-js/3.5.1',
+                sentry_client: 'raven-js/3.7.0',
                 sentry_key: 'abc',
                 sentry_version: '7'
             });
@@ -1055,7 +1051,7 @@ describe('globals', function() {
                 extra: {'session:duration': 100},
             });
             assert.deepEqual(opts.auth, {
-                sentry_client: 'raven-js/3.5.1',
+                sentry_client: 'raven-js/3.7.0',
                 sentry_key: 'abc',
                 sentry_secret: 'def',
                 sentry_version: '7'
@@ -1460,6 +1456,18 @@ describe('Raven (public API)', function() {
         });
     });
 
+    describe('.setDSN', function() {
+        it('should work with a DSN after Raven has been configured', function() {
+            Raven.config('//def@lol.com/3');
+            Raven.setDSN(SENTRY_DSN)
+
+            assert.equal(Raven._globalKey, 'abc');
+            assert.equal(Raven._globalSecret, '');
+            assert.equal(Raven._globalEndpoint, 'http://example.com:80/api/2/store/');
+            assert.equal(Raven._globalProject, '2');
+        });
+    });
+
     describe('.config', function() {
         it('should work with a DSN', function() {
             assert.equal(Raven, Raven.config(SENTRY_DSN, {foo: 'bar'}), 'it should return Raven');
@@ -1719,6 +1727,19 @@ describe('Raven (public API)', function() {
               }
             });
             assert.throw(function () { fn.__raven__; }, 'Permission denied');
+            var wrapped = Raven.wrap(fn);
+            assert.equal(fn, wrapped);
+        });
+
+        it('should return input funciton as-is if accessing __raven_wrapper__ prop throws exception', function (){
+            // see raven-js#495
+            var fn = function () {};
+            Object.defineProperty(fn, '__raven_wrapper__', {
+              get: function () {
+                  throw new Error('Permission denied')
+              }
+            });
+            assert.throw(function () { fn.__raven_wrapper__; }, 'Permission denied');
             var wrapped = Raven.wrap(fn);
             assert.equal(fn, wrapped);
         });
